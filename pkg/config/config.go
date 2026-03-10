@@ -1,11 +1,22 @@
 package config
 
+// TLSConfig TLS 加密配置
+type TLSConfig struct {
+	Enabled  bool   `yaml:"enabled" default:"false"`
+	CertFile string `yaml:"cert_file" default:""`
+	KeyFile  string `yaml:"key_file" default:""`
+	ClientCA string `yaml:"client_ca" default:""`
+}
+
 // Config 全局配置结构体
 type Config struct {
 	// 网络配置
 	BindAddr string `yaml:"bind_addr" default:"0.0.0.0:6379"`
 	MaxConn  int    `yaml:"max_conn" default:"10000"`
 	Timeout  int    `yaml:"timeout" default:"300"` // 连接超时，单位秒
+
+	// TLS 配置
+	TLS TLSConfig `yaml:"tls"`
 
 	// 内存配置
 	MaxMemory      int64  `yaml:"max_memory" default:"0"` // 0表示不限制，单位字节

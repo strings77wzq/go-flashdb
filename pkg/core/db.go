@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"goflashdb/pkg/persist"
 	"goflashdb/pkg/resp"
 	"strings"
@@ -26,6 +27,14 @@ type DB struct {
 	ttlDict    *ConcurrentDict
 	lock       sync.RWMutex
 	persistMgr *persist.PersistManager
+
+	tx     *Transaction
+	txLock sync.Mutex
+}
+
+type Transaction struct {
+	commands  [][]byte
+	discarded bool
 }
 
 func NewDB(index int) *DB {
@@ -193,6 +202,58 @@ func init() {
 	}, -2)
 	RegisterCommand("ping", execPing, nil, -1)
 	RegisterCommand("save", execSave, nil, 1)
+	RegisterCommand("expire", execExpire, func(args [][]byte) ([]string, []string) {
+		if len(args) > 0 {
+			return []string{string(args[0])}, nil
+		}
+		return nil, nil
+	}, 3)
+	RegisterCommand("pexpire", execPExpire, func(args [][]byte) ([]string, []string) {
+		if len(args) > 0 {
+			return []string{string(args[0])}, nil
+		}
+		return nil, nil
+	}, 3)
+	RegisterCommand("expireat", execExpireAt, func(args [][]byte) ([]string, []string) {
+		if len(args) > 0 {
+			return []string{string(args[0])}, nil
+		}
+		return nil, nil
+	}, 3)
+	RegisterCommand("pexpireat", execPExpireAt, func(args [][]byte) ([]string, []string) {
+		if len(args) > 0 {
+			return []string{string(args[0])}, nil
+		}
+		return nil, nil
+	}, 3)
+	RegisterCommand("ttl", execTTL, func(args [][]byte) ([]string, []string) {
+		if len(args) > 0 {
+			return nil, []string{string(args[0])}
+		}
+		return nil, nil
+	}, 2)
+	RegisterCommand("pttl", execPTTL, func(args [][]byte) ([]string, []string) {
+		if len(args) > 0 {
+			return nil, []string{string(args[0])}
+		}
+		return nil, nil
+	}, 2)
+	RegisterCommand("persist", execPersist, func(args [][]byte) ([]string, []string) {
+		if len(args) > 0 {
+			return []string{string(args[0])}, nil
+		}
+		return nil, nil
+	}, 2)
+	RegisterCommand("echo", execEcho, nil, 2)
+	RegisterCommand("dbsize", execDBSize, nil, 1)
+	RegisterCommand("flushdb", execFlushDB, func(args [][]byte) ([]string, []string) {
+		return []string{"__all__"}, nil
+	}, 1)
+	RegisterCommand("select", execSelect, nil, 2)
+	RegisterCommand("quit", execQuit, nil, 1)
+	RegisterCommand("multi", execMulti, nil, 1)
+	RegisterCommand("exec", execExec, nil, 1)
+	RegisterCommand("discard", execDiscard, nil, 1)
 }
 
 func (db *DB) LoadFromPersist() error {
@@ -244,7 +305,20 @@ func (db *DB) GetAllData() map[string][]byte {
 	data := make(map[string][]byte)
 	db.data.ForEach(func(key string, value interface{}) bool {
 		if !db.IsExpired(key) {
-			data[key] = value.([]byte)
+			switch v := value.(type) {
+			case []byte:
+				data[key] = v
+			case *StringData:
+				data[key] = v.value
+			case *HashData:
+				data[key] = nil
+			case *ListData:
+				data[key] = nil
+			case *SetData:
+				data[key] = nil
+			case *ZSetData:
+				data[key] = nil
+			}
 		}
 		return true
 	})
@@ -257,7 +331,9 @@ func (db *DB) GetAllExpireTimes() map[string]int64 {
 
 	expireTimes := make(map[string]int64)
 	db.ttlDict.ForEach(func(key string, value interface{}) bool {
-		expireTimes[key] = value.(int64)
+		if v, ok := value.(int64); ok {
+			expireTimes[key] = v
+		}
 		return true
 	})
 	return expireTimes
@@ -275,5 +351,247 @@ func execSave(db *DB, args [][]byte) resp.Reply {
 		return resp.NewErrorReply("ERR " + err.Error())
 	}
 
+	return resp.OkReply
+}
+
+func execExpire(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	seconds, err := parseInt64(string(args[1]))
+	if err != nil {
+		return resp.NewErrorReply("ERR value is not an integer or out of range")
+	}
+
+	if _, ok := db.data.Get(key); !ok {
+		return &resp.IntegerReply{Num: 0}
+	}
+
+	expireAt := time.Now().Unix() + seconds
+	db.Expire(key, expireAt*1000)
+	return &resp.IntegerReply{Num: 1}
+}
+
+func execPExpire(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	milliseconds, err := parseInt64(string(args[1]))
+	if err != nil {
+		return resp.NewErrorReply("ERR value is not an integer or out of range")
+	}
+
+	if _, ok := db.data.Get(key); !ok {
+		return &resp.IntegerReply{Num: 0}
+	}
+
+	expireAt := time.Now().UnixMilli() + milliseconds
+	db.Expire(key, expireAt)
+	return &resp.IntegerReply{Num: 1}
+}
+
+func execExpireAt(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	timestamp, err := parseInt64(string(args[1]))
+	if err != nil {
+		return resp.NewErrorReply("ERR value is not an integer or out of range")
+	}
+
+	if _, ok := db.data.Get(key); !ok {
+		return &resp.IntegerReply{Num: 0}
+	}
+
+	db.Expire(key, timestamp*1000)
+	return &resp.IntegerReply{Num: 1}
+}
+
+func execPExpireAt(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	timestamp, err := parseInt64(string(args[1]))
+	if err != nil {
+		return resp.NewErrorReply("ERR value is not an integer or out of range")
+	}
+
+	if _, ok := db.data.Get(key); !ok {
+		return &resp.IntegerReply{Num: 0}
+	}
+
+	db.Expire(key, timestamp)
+	return &resp.IntegerReply{Num: 1}
+}
+
+func execTTL(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+
+	_, ok := db.data.Get(key)
+	if !ok {
+		return &resp.IntegerReply{Num: -2}
+	}
+
+	expireTime, ok := db.ttlDict.Get(key)
+	if !ok {
+		return &resp.IntegerReply{Num: -1}
+	}
+
+	expireMs := expireTime.(int64)
+	remaining := expireMs - time.Now().UnixMilli()
+	if remaining <= 0 {
+		db.data.Delete(key)
+		db.ttlDict.Delete(key)
+		return &resp.IntegerReply{Num: -2}
+	}
+
+	return &resp.IntegerReply{Num: remaining / 1000}
+}
+
+func execPTTL(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+
+	_, ok := db.data.Get(key)
+	if !ok {
+		return &resp.IntegerReply{Num: -2}
+	}
+
+	expireTime, ok := db.ttlDict.Get(key)
+	if !ok {
+		return &resp.IntegerReply{Num: -1}
+	}
+
+	expireMs := expireTime.(int64)
+	remaining := expireMs - time.Now().UnixMilli()
+	if remaining <= 0 {
+		db.data.Delete(key)
+		db.ttlDict.Delete(key)
+		return &resp.IntegerReply{Num: -2}
+	}
+
+	return &resp.IntegerReply{Num: remaining}
+}
+
+func execPersist(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+
+	if _, ok := db.data.Get(key); !ok {
+		return &resp.IntegerReply{Num: 0}
+	}
+
+	if _, ok := db.ttlDict.Get(key); !ok {
+		return &resp.IntegerReply{Num: 0}
+	}
+
+	db.ttlDict.Delete(key)
+	return &resp.IntegerReply{Num: 1}
+}
+
+func execEcho(db *DB, args [][]byte) resp.Reply {
+	return resp.NewBulkReply(args[0])
+}
+
+func execDBSize(db *DB, args [][]byte) resp.Reply {
+	count := 0
+	db.data.ForEach(func(key string, value interface{}) bool {
+		if !db.IsExpired(key) {
+			count++
+		}
+		return true
+	})
+	return &resp.IntegerReply{Num: int64(count)}
+}
+
+func execFlushDB(db *DB, args [][]byte) resp.Reply {
+	db.data = NewConcurrentDict()
+	db.ttlDict = NewConcurrentDict()
+	return resp.OkReply
+}
+
+func execSelect(db *DB, args [][]byte) resp.Reply {
+	index, err := parseInt64(string(args[0]))
+	if err != nil {
+		return resp.NewErrorReply("ERR invalid DB index")
+	}
+	db.index = int(index)
+	return resp.OkReply
+}
+
+func execQuit(db *DB, args [][]byte) resp.Reply {
+	return resp.OkReply
+}
+
+func parseInt64(s string) (int64, error) {
+	var n int64
+	var negative bool
+	i := 0
+
+	if len(s) > 0 && s[0] == '-' {
+		negative = true
+		i = 1
+	}
+
+	for ; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, errors.New("not an integer")
+		}
+		n = n*10 + int64(s[i]-'0')
+	}
+
+	if negative {
+		n = -n
+	}
+	return n, nil
+}
+
+func execMulti(db *DB, args [][]byte) resp.Reply {
+	db.txLock.Lock()
+	defer db.txLock.Unlock()
+
+	if db.tx != nil {
+		return resp.NewErrorReply("ERR MULTI calls can not be nested")
+	}
+
+	db.tx = &Transaction{
+		commands: make([][]byte, 0),
+	}
+	return resp.OkReply
+}
+
+func execExec(db *DB, args [][]byte) resp.Reply {
+	db.txLock.Lock()
+	tx := db.tx
+	db.tx = nil
+	db.txLock.Unlock()
+
+	if tx == nil {
+		return resp.NewErrorReply("ERR EXEC without MULTI")
+	}
+
+	if tx.discarded {
+		return resp.NewErrorReply("ERR DISCARD called")
+	}
+
+	if len(tx.commands) == 0 {
+		return &resp.ArrayReply{Replies: []resp.Reply{}}
+	}
+
+	replies := make([]resp.Reply, 0, len(tx.commands))
+	for _, cmd := range tx.commands {
+		cmdName, cmdArgs, err := resp.ParseCommand(cmd)
+		if err != nil {
+			replies = append(replies, resp.NewErrorReply("ERR "+err.Error()))
+			continue
+		}
+
+		result := db.Exec(cmdName, cmdArgs)
+		replies = append(replies, result)
+	}
+
+	return &resp.ArrayReply{Replies: replies}
+}
+
+func execDiscard(db *DB, args [][]byte) resp.Reply {
+	db.txLock.Lock()
+	defer db.txLock.Unlock()
+
+	if db.tx == nil {
+		return resp.NewErrorReply("ERR DISCARD without MULTI")
+	}
+
+	db.tx.discarded = true
+	db.tx = nil
 	return resp.OkReply
 }

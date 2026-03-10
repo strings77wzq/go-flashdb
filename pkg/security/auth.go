@@ -1,15 +1,16 @@
 package security
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/subtle"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Authenticator struct {
 	password     string
-	passwordHash string
+	passwordHash []byte
 	enabled      bool
 	sessions     map[string]*Session
 	mu           sync.RWMutex
@@ -22,18 +23,22 @@ type Session struct {
 }
 
 func NewAuthenticator(password string) *Authenticator {
+	var hash []byte
+	var err error
+	if password != "" {
+		hash, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			hash = []byte{}
+		}
+	}
+
 	auth := &Authenticator{
 		password:     password,
-		passwordHash: hashPassword(password),
+		passwordHash: hash,
 		enabled:      password != "",
 		sessions:     make(map[string]*Session),
 	}
 	return auth
-}
-
-func hashPassword(password string) string {
-	hash := sha256.Sum256([]byte(password))
-	return hex.EncodeToString(hash[:])
 }
 
 func (a *Authenticator) IsEnabled() bool {
@@ -44,7 +49,8 @@ func (a *Authenticator) Authenticate(password string) bool {
 	if !a.enabled {
 		return true
 	}
-	return hashPassword(password) == a.passwordHash
+	err := bcrypt.CompareHashAndPassword(a.passwordHash, []byte(password))
+	return err == nil
 }
 
 func (a *Authenticator) CreateSession(sessionID string) {
@@ -90,4 +96,8 @@ func (a *Authenticator) CleanupExpiredSessions(maxAge int64) {
 			delete(a.sessions, id)
 		}
 	}
+}
+
+func ConstantTimeCompare(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

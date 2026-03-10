@@ -2,6 +2,7 @@ package net
 
 import (
 	"bufio"
+	"crypto/tls"
 	"goflashdb/pkg/core"
 	"goflashdb/pkg/persist"
 	"goflashdb/pkg/resp"
@@ -23,6 +24,7 @@ type Server struct {
 	rateLimiter *security.RateLimiter
 	filter      *security.CommandFilter
 	persistMgr  *persist.PersistManager
+	tlsConfig   *tls.Config
 }
 
 type ServerOption func(*Server)
@@ -54,6 +56,17 @@ func WithPersist(aofFile, rdbFile string, aofEnabled bool, saveInterval time.Dur
 	}
 }
 
+func WithTLS(certFile, keyFile string) ServerOption {
+	return func(s *Server) {
+		if certFile != "" && keyFile != "" {
+			s.tlsConfig = &tls.Config{}
+			if cert, err := tls.LoadX509KeyPair(certFile, keyFile); err == nil {
+				s.tlsConfig.Certificates = []tls.Certificate{cert}
+			}
+		}
+	}
+}
+
 func NewServer(addr string, opts ...ServerOption) (*Server, error) {
 	s := &Server{
 		addr:    addr,
@@ -76,7 +89,14 @@ func NewServer(addr string, opts ...ServerOption) (*Server, error) {
 }
 
 func (s *Server) Start() error {
-	listener, err := net.Listen("tcp", s.addr)
+	var listener net.Listener
+	var err error
+
+	if s.tlsConfig != nil {
+		listener, err = tls.Listen("tcp", s.addr, s.tlsConfig)
+	} else {
+		listener, err = net.Listen("tcp", s.addr)
+	}
 	if err != nil {
 		return err
 	}
