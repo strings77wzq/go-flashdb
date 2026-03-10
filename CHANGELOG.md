@@ -82,6 +82,27 @@ goflashdb/
 └── test/               # Tests
 ```
 
+## [0.2.0] - 2026-03-10
+
+### Added
+- New test cases for `LPOP`, `RPOP`, `LTRIM` edge cases
+- New test cases for `TTL`/`PTTL` edge cases (non-existent keys, keys without expiration)
+- New test cases for `INCRBY`/`DECRBY` with negative values
+- Added `readyCh` to net.Server for reliable test startup synchronization
+- Added mutex protection for net.Server running state to prevent race conditions
+
+### Fixed
+- Fixed `execSetNX` return value logic inversion (now correctly returns 1 when key is newly set, 0 when key already exists)
+- Fixed `execSetEX`/`execPSetEX` parameter order errors (expire time parameter was in wrong position)
+- Fixed null pointer panic in net.Server when authentication is not enabled (added nil check before calling `IsEnabled()`)
+- Fixed race conditions in net package tests (replaced flaky `time.Sleep` with reliable ready channel waiting)
+- Fixed race condition between net.Server `Start()` and `Close()` methods (added mutex for all access to `running` state)
+
+### Improvements
+- Increased overall test coverage from 68% to 71%
+- All tests now pass with `-race` detection enabled
+- CI pipeline now fully passes all steps (build, test, lint, benchmark)
+
 ## [Unreleased]
 
 ### Planned
