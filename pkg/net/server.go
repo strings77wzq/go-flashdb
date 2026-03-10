@@ -126,11 +126,15 @@ func (s *Server) handleConn(conn net.Conn) {
 	}()
 
 	clientAddr := conn.RemoteAddr().String()
+	clientID := core.AddClient(clientAddr, 0)
+	defer core.RemoveClient(clientID)
+
 	reader := bufio.NewReader(conn)
 	parser := resp.NewParser(reader)
 	authenticated := !s.auth.IsEnabled()
 
 	for s.running {
+		startTime := time.Now()
 		reply, err := parser.Parse()
 		if err != nil {
 			return
@@ -160,6 +164,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		cmdLower := strings.ToLower(cmdName)
+		core.UpdateClient(clientID, cmdLower)
 
 		if s.rateLimiter != nil && !s.rateLimiter.Allow(clientAddr) {
 			conn.Write(resp.NewErrorReply("ERR rate limit exceeded").ToBytes())
@@ -193,8 +198,25 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		result := s.db.Exec(cmdLower, args)
+
+		duration := time.Since(startTime)
+		argsStr := make([]string, len(args))
+		for i, arg := range args {
+			argsStr[i] = string(arg)
+		}
+		core.AddSlowLog(cmdName, argsStr, duration)
+
+		if result == nil {
+			go s.handleShutdown()
+			return
+		}
+
 		conn.Write(result.ToBytes())
 	}
+}
+
+func (s *Server) handleShutdown() {
+	s.Close()
 }
 
 func (s *Server) Close() {
