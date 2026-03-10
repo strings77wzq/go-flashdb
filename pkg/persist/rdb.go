@@ -81,7 +81,7 @@ func (s *RDBSaver) Save(data map[string][]byte, expireTimes map[string]int64) er
 	}
 	defer os.Remove(tmpFile)
 
-	file.Write(s.encoder.EncodeHeader())
+	_, _ = file.Write(s.encoder.EncodeHeader())
 
 	for key, value := range data {
 		expireAt := int64(0)
@@ -89,12 +89,12 @@ func (s *RDBSaver) Save(data map[string][]byte, expireTimes map[string]int64) er
 			expireAt = et
 		}
 		encoded := s.encoder.EncodeString(key, value, expireAt)
-		file.Write(encoded)
+		_, _ = file.Write(encoded)
 	}
 
-	file.Write(s.encoder.EncodeFooter())
-	file.Sync()
-	file.Close()
+	_, _ = file.Write(s.encoder.EncodeFooter())
+	_ = file.Sync()
+	_ = file.Close()
 
 	return os.Rename(tmpFile, s.filename)
 }

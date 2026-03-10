@@ -71,15 +71,15 @@ func (p *AOFPersister) writeLoop() {
 func (p *AOFPersister) writeCmd(cmd []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.writer.Write(cmd)
-	p.writer.Flush()
+	_, _ = p.writer.Write(cmd)
+	_ = p.writer.Flush()
 }
 
 func (p *AOFPersister) fsync() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.writer.Flush()
-	p.file.Sync()
+	_ = p.writer.Flush()
+	_ = p.file.Sync()
 	p.lastFsync = time.Now()
 }
 
@@ -90,9 +90,9 @@ func (p *AOFPersister) Append(cmd []byte) {
 func (p *AOFPersister) flushAndClose() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.writer.Flush()
-	p.file.Sync()
-	p.file.Close()
+	_ = p.writer.Flush()
+	_ = p.file.Sync()
+	_ = p.file.Close()
 }
 
 func (p *AOFPersister) Close() {
@@ -142,12 +142,12 @@ func (p *AOFPersister) Rewrite(data map[string][]byte) error {
 	for key, value := range data {
 		cmd := fmt.Sprintf("*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
 			len(key), key, len(value), string(value))
-		writer.WriteString(cmd)
+		_, _ = writer.WriteString(cmd)
 	}
-	writer.Flush()
-	file.Sync()
-	file.Close()
+	_ = writer.Flush()
+	_ = file.Sync()
+	_ = file.Close()
 
-	os.Rename(tmpFile, p.filename)
+	_ = os.Rename(tmpFile, p.filename)
 	return nil
 }
