@@ -75,23 +75,23 @@ func execSet(db *DB, args [][]byte) resp.Reply {
 func execSetNX(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	value := args[1]
-	existed := db.data.SetIfAbsent(key, &StringData{
+	success := db.data.SetIfAbsent(key, &StringData{
 		value:    value,
 		expireAt: 0,
 	})
-	if existed {
-		return &resp.IntegerReply{Num: 0}
+	if success {
+		return &resp.IntegerReply{Num: 1}
 	}
-	return &resp.IntegerReply{Num: 1}
+	return &resp.IntegerReply{Num: 0}
 }
 
 func execSetEX(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	value := args[1]
-	seconds, err := strconv.ParseInt(string(args[2]), 10, 64)
+	seconds, err := strconv.ParseInt(string(args[1]), 10, 64)
 	if err != nil {
 		return resp.NewErrorReply("ERR value is not an integer")
 	}
+	value := args[2]
 	expireAt := time.Now().Unix() + seconds
 	db.SetStringWithExpire(key, value, expireAt*1000)
 	return resp.OkReply
@@ -99,11 +99,11 @@ func execSetEX(db *DB, args [][]byte) resp.Reply {
 
 func execPSetEX(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	value := args[1]
-	milliseconds, err := strconv.ParseInt(string(args[2]), 10, 64)
+	milliseconds, err := strconv.ParseInt(string(args[1]), 10, 64)
 	if err != nil {
 		return resp.NewErrorReply("ERR value is not an integer")
 	}
+	value := args[2]
 	expireAt := time.Now().UnixMilli() + milliseconds
 	db.SetStringWithExpire(key, value, expireAt)
 	return resp.OkReply

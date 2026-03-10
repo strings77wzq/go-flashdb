@@ -14,11 +14,13 @@ import (
 )
 
 type Server struct {
+	mu          sync.Mutex
 	addr        string
 	listener    net.Listener
 	running     bool
 	wg          sync.WaitGroup
 	closeCh     chan struct{}
+	readyCh     chan struct{}
 	db          *core.DB
 	auth        *security.Authenticator
 	rateLimiter *security.RateLimiter
@@ -71,6 +73,7 @@ func NewServer(addr string, opts ...ServerOption) (*Server, error) {
 	s := &Server{
 		addr:    addr,
 		closeCh: make(chan struct{}),
+		readyCh: make(chan struct{}),
 		db:      core.NewDB(0),
 	}
 
@@ -101,9 +104,18 @@ func (s *Server) Start() error {
 		return err
 	}
 	s.listener = listener
+	s.mu.Lock()
 	s.running = true
+	s.mu.Unlock()
+	close(s.readyCh)
 
-	for s.running {
+	for {
+		s.mu.Lock()
+		running := s.running
+		s.mu.Unlock()
+		if !running {
+			break
+		}
 		conn, err := listener.Accept()
 		if err != nil {
 			select {
@@ -131,9 +143,15 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	reader := bufio.NewReader(conn)
 	parser := resp.NewParser(reader)
-	authenticated := !s.auth.IsEnabled()
+	authenticated := s.auth == nil || !s.auth.IsEnabled()
 
-	for s.running {
+	for {
+		s.mu.Lock()
+		running := s.running
+		s.mu.Unlock()
+		if !running {
+			break
+		}
 		startTime := time.Now()
 		reply, err := parser.Parse()
 		if err != nil {
@@ -220,7 +238,13 @@ func (s *Server) handleShutdown() {
 }
 
 func (s *Server) Close() {
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return
+	}
 	s.running = false
+	s.mu.Unlock()
 	close(s.closeCh)
 	if s.listener != nil {
 		s.listener.Close()
