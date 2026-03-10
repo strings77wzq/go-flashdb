@@ -3,26 +3,76 @@ package net
 import (
 	"bufio"
 	"goflashdb/pkg/core"
+	"goflashdb/pkg/persist"
 	"goflashdb/pkg/resp"
+	"goflashdb/pkg/security"
 	"net"
+	"strings"
 	"sync"
+	"time"
 )
 
 type Server struct {
-	addr     string
-	listener net.Listener
-	running  bool
-	wg       sync.WaitGroup
-	closeCh  chan struct{}
-	db       *core.DB
+	addr        string
+	listener    net.Listener
+	running     bool
+	wg          sync.WaitGroup
+	closeCh     chan struct{}
+	db          *core.DB
+	auth        *security.Authenticator
+	rateLimiter *security.RateLimiter
+	filter      *security.CommandFilter
+	persistMgr  *persist.PersistManager
 }
 
-func NewServer(addr string) (*Server, error) {
-	return &Server{
+type ServerOption func(*Server)
+
+func WithAuth(password string) ServerOption {
+	return func(s *Server) {
+		s.auth = security.NewAuthenticator(password)
+	}
+}
+
+func WithRateLimit(limit int, window time.Duration) ServerOption {
+	return func(s *Server) {
+		s.rateLimiter = security.NewRateLimiter(limit, window)
+	}
+}
+
+func WithFilter(renamedCommands map[string]string) ServerOption {
+	return func(s *Server) {
+		s.filter = security.NewCommandFilter(renamedCommands)
+	}
+}
+
+func WithPersist(aofFile, rdbFile string, aofEnabled bool, saveInterval time.Duration) ServerOption {
+	return func(s *Server) {
+		pm, err := persist.NewPersistManager(aofFile, rdbFile, aofEnabled, saveInterval)
+		if err == nil {
+			s.persistMgr = pm
+		}
+	}
+}
+
+func NewServer(addr string, opts ...ServerOption) (*Server, error) {
+	s := &Server{
 		addr:    addr,
 		closeCh: make(chan struct{}),
 		db:      core.NewDB(0),
-	}, nil
+	}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	if s.persistMgr != nil {
+		s.db = core.NewDBWithPersist(0, s.persistMgr)
+		if err := s.db.LoadFromPersist(); err != nil {
+			return nil, err
+		}
+	}
+
+	return s, nil
 }
 
 func (s *Server) Start() error {
@@ -55,8 +105,10 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.wg.Done()
 	}()
 
+	clientAddr := conn.RemoteAddr().String()
 	reader := bufio.NewReader(conn)
 	parser := resp.NewParser(reader)
+	authenticated := !s.auth.IsEnabled()
 
 	for s.running {
 		reply, err := parser.Parse()
@@ -87,7 +139,40 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		result := s.db.Exec(cmdName, args)
+		cmdLower := strings.ToLower(cmdName)
+
+		if s.rateLimiter != nil && !s.rateLimiter.Allow(clientAddr) {
+			conn.Write(resp.NewErrorReply("ERR rate limit exceeded").ToBytes())
+			continue
+		}
+
+		if !authenticated {
+			if cmdLower == "auth" {
+				if len(args) != 1 {
+					conn.Write(resp.NewErrorReply("ERR wrong number of arguments for 'auth' command").ToBytes())
+					continue
+				}
+				if s.auth.Authenticate(string(args[0])) {
+					authenticated = true
+					conn.Write(resp.OkReply.ToBytes())
+				} else {
+					conn.Write(resp.NewErrorReply("ERR invalid password").ToBytes())
+				}
+				continue
+			}
+			conn.Write(resp.NewErrorReply("NOAUTH Authentication required").ToBytes())
+			continue
+		}
+
+		if s.filter != nil {
+			if s.filter.IsBlocked(cmdLower) {
+				conn.Write(resp.NewErrorReply("ERR command '" + cmdLower + "' is blocked").ToBytes())
+				continue
+			}
+			cmdLower = s.filter.Rename(cmdLower)
+		}
+
+		result := s.db.Exec(cmdLower, args)
 		conn.Write(result.ToBytes())
 	}
 }
@@ -98,5 +183,12 @@ func (s *Server) Close() {
 	if s.listener != nil {
 		s.listener.Close()
 	}
+	if s.persistMgr != nil {
+		s.persistMgr.Close()
+	}
 	s.wg.Wait()
+}
+
+func (s *Server) GetDB() *core.DB {
+	return s.db
 }
