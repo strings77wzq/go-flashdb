@@ -2,8 +2,12 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/strings77wzq/goflashdb)](https://goreportcard.com/report/github.com/strings77wzq/goflashdb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-website-blue.svg)](https://strings77wzq.github.io/go-flashdb/)
+[![Version](https://img.shields.io/badge/version-v0.3.0-green.svg)](https://github.com/strings77wzq/go-flashdb/releases/tag/v0.3.0)
 
 🚀 **goflashdb** - Go 语言实现的高性能、Redis 兼容的生产级键值存储系统
+
+📚 **[在线文档](https://strings77wzq.github.io/go-flashdb/)** | 🎯 **[快速开始](https://strings77wzq.github.io/go-flashdb/guide/)** | 🏗️ **[架构设计](https://strings77wzq.github.io/go-flashdb/design/)**
 
 ## ✨ 特性
 
@@ -140,6 +144,31 @@ goflashdb/
 └── test/               # 测试
 ```
 
+## 📚 文档与学习
+
+### 在线文档
+
+访问 [https://strings77wzq.github.io/go-flashdb/](https://strings77wzq.github.io/go-flashdb/) 查看完整文档：
+
+- **[快速开始](https://strings77wzq.github.io/go-flashdb/guide/)** - 安装、启动、基本使用
+- **[设计哲学](https://strings77wzq.github.io/go-flashdb/design/)** - 架构设计思想与工程实践
+- **[源码学习](https://strings77wzq.github.io/go-flashdb/guide/02-tcp-server.html)** - 从 TCP 服务器到 Cluster 协议的深度教程
+
+### 教程系列
+
+1. [快速开始](https://strings77wzq.github.io/go-flashdb/guide/01-quickstart.html) - 安装与基础命令
+2. [TCP 服务器](https://strings77wzq.github.io/go-flashdb/guide/02-tcp-server.html) - goroutine-per-connection 模型
+3. [并发字典](https://strings77wzq.github.io/go-flashdb/guide/04-concurrent-dict.html) - 65536 分片设计解析
+
+### 为什么选择 go-flashdb？
+
+相比其他 Redis 实现，go-flashdb 更注重**教学价值**和**工程实践**：
+
+- ✅ **清晰的架构设计** - 分层明确，易于理解
+- ✅ **详细的中文教程** - 不只是代码，更有设计思路
+- ✅ **AI 扩展接口** - 预留 OpenClaw/MCP 接口，面向未来
+- ✅ **完整的工程实践** - 测试、文档、CI/CD 一应俱全
+
 ## 🤝 贡献
 
 欢迎贡献代码！请查看 [CONTRIBUTING.md](CONTRIBUTING.md)
@@ -152,3 +181,4 @@ goflashdb/
 
 - [godis](https://github.com/HDT3213/godis) - Go 语言 Redis 实现参考
 - [mini-redis](https://github.com/tokio-rs/mini-redis) - Rust 教学项目参考
+- [博客园 Finley](https://www.cnblogs.com/Finley/category/1598973.html) - 教程写作风格参考
