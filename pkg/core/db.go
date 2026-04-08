@@ -73,6 +73,9 @@ type DB struct {
 
 	tx     *Transaction
 	txLock sync.Mutex
+
+	watchMap map[string]map[int64]struct{}
+	watchMu  sync.Mutex
 }
 
 type Transaction struct {
@@ -82,9 +85,10 @@ type Transaction struct {
 
 func NewDB(index int) *DB {
 	return &DB{
-		index:   index,
-		data:    NewConcurrentDict(),
-		ttlDict: NewConcurrentDict(),
+		index:    index,
+		data:     NewConcurrentDict(),
+		ttlDict:  NewConcurrentDict(),
+		watchMap: make(map[string]map[int64]struct{}),
 	}
 }
 
@@ -205,6 +209,10 @@ func execDel(db *DB, args [][]byte) resp.Reply {
 		if db.data.Delete(key) {
 			count++
 			db.ttlDict.Delete(key)
+
+			db.watchMu.Lock()
+			delete(db.watchMap, key)
+			db.watchMu.Unlock()
 		}
 	}
 	return &resp.IntegerReply{Num: int64(count)}
@@ -291,12 +299,17 @@ func init() {
 	RegisterCommand("dbsize", execDBSize, nil, 1)
 	RegisterCommand("flushdb", execFlushDB, func(args [][]byte) ([]string, []string) {
 		return []string{"__all__"}, nil
-	}, 1)
+	}, -1)
+	RegisterCommand("flushall", execFlushAll, func(args [][]byte) ([]string, []string) {
+		return []string{"__all__"}, nil
+	}, -1)
 	RegisterCommand("select", execSelect, nil, 2)
 	RegisterCommand("quit", execQuit, nil, 1)
 	RegisterCommand("multi", execMulti, nil, 1)
 	RegisterCommand("exec", execExec, nil, 1)
 	RegisterCommand("discard", execDiscard, nil, 1)
+	RegisterCommand("watch", execWatch, nil, -2)
+	RegisterCommand("unwatch", execUnwatch, nil, 1)
 	RegisterCommand("info", execInfo, nil, -1)
 	RegisterCommand("config", execConfig, nil, -3)
 	RegisterCommand("time", execTime, nil, 1)
@@ -545,8 +558,56 @@ func execDBSize(db *DB, args [][]byte) resp.Reply {
 }
 
 func execFlushDB(db *DB, args [][]byte) resp.Reply {
+	async := false
+	if len(args) > 0 {
+		arg := strings.ToLower(string(args[0]))
+		if arg == "async" {
+			async = true
+		}
+	}
+
+	if async {
+		go func() {
+			db.data = NewConcurrentDict()
+			db.ttlDict = NewConcurrentDict()
+		}()
+		return resp.OkReply
+	}
+
 	db.data = NewConcurrentDict()
 	db.ttlDict = NewConcurrentDict()
+	return resp.OkReply
+}
+
+var flushAllFunc func() error
+
+func RegisterFlushAll(fn func() error) {
+	flushAllFunc = fn
+}
+
+func execFlushAll(db *DB, args [][]byte) resp.Reply {
+	async := false
+	if len(args) > 0 {
+		arg := strings.ToLower(string(args[0]))
+		if arg == "async" {
+			async = true
+		}
+	}
+
+	if flushAllFunc == nil {
+		return resp.NewErrorReply("ERR FLUSHALL is not supported in single database mode")
+	}
+
+	if async {
+		go func() {
+			flushAllFunc()
+		}()
+		return resp.OkReply
+	}
+
+	if err := flushAllFunc(); err != nil {
+		return resp.NewErrorReply("ERR " + err.Error())
+	}
 	return resp.OkReply
 }
 
@@ -614,7 +675,37 @@ func execExec(db *DB, args [][]byte) resp.Reply {
 		return resp.NewErrorReply("ERR DISCARD called")
 	}
 
+	db.watchMu.Lock()
+	watchedKeys := make([]string, 0, len(db.watchMap))
+	for key := range db.watchMap {
+		watchedKeys = append(watchedKeys, key)
+	}
+	db.watchMu.Unlock()
+
+	if len(watchedKeys) > 0 {
+		for _, key := range watchedKeys {
+			_, exists := db.data.Get(key)
+			if !exists {
+				continue
+			}
+			prevVal, hasPrev := db.data.Get(key)
+			db.lock.RLock()
+			db.lock.RUnlock()
+
+			curVal, hasCur := db.data.Get(key)
+			if !hasPrev && hasCur || hasPrev && !hasCur || (hasPrev && hasCur && prevVal != curVal) {
+				db.watchMu.Lock()
+				db.watchMap = make(map[string]map[int64]struct{})
+				db.watchMu.Unlock()
+				return &resp.ArrayReply{Replies: []resp.Reply{}}
+			}
+		}
+	}
+
 	if len(tx.commands) == 0 {
+		db.watchMu.Lock()
+		db.watchMap = make(map[string]map[int64]struct{})
+		db.watchMu.Unlock()
 		return &resp.ArrayReply{Replies: []resp.Reply{}}
 	}
 
@@ -630,6 +721,10 @@ func execExec(db *DB, args [][]byte) resp.Reply {
 		replies = append(replies, result)
 	}
 
+	db.watchMu.Lock()
+	db.watchMap = make(map[string]map[int64]struct{})
+	db.watchMu.Unlock()
+
 	return &resp.ArrayReply{Replies: replies}
 }
 
@@ -643,6 +738,40 @@ func execDiscard(db *DB, args [][]byte) resp.Reply {
 
 	db.tx.discarded = true
 	db.tx = nil
+
+	db.watchMu.Lock()
+	db.watchMap = make(map[string]map[int64]struct{})
+	db.watchMu.Unlock()
+
+	return resp.OkReply
+}
+
+func execWatch(db *DB, args [][]byte) resp.Reply {
+	if len(args) == 0 {
+		return resp.NewErrorReply("ERR wrong number of arguments for 'watch' command")
+	}
+
+	clientID := int64(0)
+	db.watchMu.Lock()
+	defer db.watchMu.Unlock()
+
+	for _, arg := range args {
+		key := string(arg)
+		if _, ok := db.watchMap[key]; !ok {
+			db.watchMap[key] = make(map[int64]struct{})
+		}
+		db.watchMap[key][clientID] = struct{}{}
+	}
+
+	return resp.OkReply
+}
+
+func execUnwatch(db *DB, args [][]byte) resp.Reply {
+	db.watchMu.Lock()
+	defer db.watchMu.Unlock()
+
+	db.watchMap = make(map[string]map[int64]struct{})
+
 	return resp.OkReply
 }
 
