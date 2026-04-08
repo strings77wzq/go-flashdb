@@ -1,8 +1,10 @@
 import { defaultTheme } from '@vuepress/theme-default'
 import { defineUserConfig } from 'vuepress'
+import { viteBundler } from '@vuepress/bundler-vite'
 import { searchPlugin } from '@vuepress/plugin-search'
 
 export default defineUserConfig({
+  bundler: viteBundler(),
   lang: 'zh-CN',
   title: 'Go-FlashDB',
   description: 'Go 语言实现的高性能 Redis 服务器 - 深入源码学习',
